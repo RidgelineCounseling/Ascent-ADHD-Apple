@@ -16,11 +16,15 @@ struct HomeView: View {
 
     @State private var rightNowExpanded = false
     @State private var scoreboardExpanded = false
-    @State private var showAddMenu = false
+    @State private var showSpeedDial = false
     @State private var editorEntry: ScheduleEntry? = nil
     @State private var newEntryIsPriority = false
     @State private var presentEditor = false
     @State private var showFocusSetup = false
+    @State private var showBrainDump = false
+    @State private var showGoalEditor = false
+    @State private var showQuickTodo = false
+    @State private var quickTodoText = ""
     @State private var externalEvents: [ExternalEvent] = []
 
     private var selected: CalDate { ui.selectedDate }
@@ -62,7 +66,14 @@ struct HomeView: View {
                 .padding(.vertical, 4)
             }
 
-            addButton
+            // Dim scrim behind the speed-dial (tap to dismiss).
+            if showSpeedDial {
+                PureBlack.opacity(0.25).ignoresSafeArea()
+                    .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showSpeedDial = false } }
+                    .transition(.opacity)
+            }
+
+            fabArea
         }
         .onAppear(perform: loadExternalEvents)
         .onChange(of: selected) { _, _ in loadExternalEvents() }
@@ -71,12 +82,71 @@ struct HomeView: View {
             TaskEditorSheet(entry: editorEntry, isPriority: newEntryIsPriority, ownerDate: selected)
         }
         .sheet(isPresented: $showFocusSetup) { FocusSetupSheet() }
-        .confirmationDialog("Add", isPresented: $showAddMenu, titleVisibility: .visible) {
-            Button("New event") { editorEntry = nil; newEntryIsPriority = false; presentEditor = true }
-            Button("New priority") { editorEntry = nil; newEntryIsPriority = true; presentEditor = true }
-            Button("Start focus session") { showFocusSetup = true }
-            Button("Cancel", role: .cancel) { }
+        .sheet(isPresented: $showBrainDump) { BrainDumpSheet(date: selected) }
+        .sheet(isPresented: $showGoalEditor) {
+            GoalEditorSheet(goal: nil, type: "WEEKLY",
+                            weekAnchor: selected.previousOrSameMonday, monthAnchor: nil)
         }
+        .alert("Add a to-do", isPresented: $showQuickTodo) {
+            TextField("What is it?", text: $quickTodoText)
+            Button("Add") {
+                let t = quickTodoText.trimmed
+                if !t.isEmpty { store.otherTodoEntries.append(OtherTodoItem(text: t, date: selected)); store.recordActivity() }
+                quickTodoText = ""
+            }
+            Button("Cancel", role: .cancel) { quickTodoText = "" }
+        }
+    }
+
+    // MARK: Speed-dial FAB (ported from the Android add-sheet)
+
+    private func fire(_ action: @escaping () -> Void) {
+        withAnimation(.easeOut(duration: 0.2)) { showSpeedDial = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: action)
+    }
+
+    private func speedDialPill(_ icon: String, _ label: String, _ action: @escaping () -> Void) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 18)).foregroundColor(PureWhite).frame(width: 22)
+            Text(label).font(AscentFont.titleMedium).foregroundColor(PureWhite)
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .background(Capsule().fill(RidgelineBlue))
+        .shadow(color: PureBlack.opacity(0.15), radius: 4, y: 2)
+        .contentShape(Capsule())
+        .onTapGesture { fire(action) }
+    }
+
+    private var fabArea: some View {
+        VStack(alignment: .trailing, spacing: 12) {
+            if showSpeedDial {
+                speedDialPill("calendar.badge.plus", "Schedule an event") {
+                    editorEntry = nil; newEntryIsPriority = false; presentEditor = true
+                }
+                speedDialPill("brain.head.profile", "Brain dump") { showBrainDump = true }
+                speedDialPill("doc.text", "Add a to-do") { showQuickTodo = true }
+                speedDialPill("timer", "Focus session") { showFocusSetup = true }
+                speedDialPill("flag", "New goal") { showGoalEditor = true }
+            }
+
+            // Today-return chip (only when off today).
+            if !showSpeedDial && selected != CalDate.today() {
+                Button { ui.selectedDate = .today() } label: {
+                    Text("\(CalDate.today().dayOfMonth)")
+                        .font(AscentFont.titleMedium).foregroundColor(PureWhite)
+                        .frame(width: 44, height: 44).background(Circle().fill(RidgelineBlue))
+                }
+            }
+
+            // The FAB: + rotates to × while the dial is open.
+            Button { withAnimation(.easeOut(duration: 0.2)) { showSpeedDial.toggle() } } label: {
+                Image(systemName: "plus").font(.system(size: 26, weight: .semibold)).foregroundColor(PureWhite)
+                    .rotationEffect(.degrees(showSpeedDial ? 45 : 0))
+                    .frame(width: 54, height: 54).background(Circle().fill(RidgelineBlue))
+                    .shadow(color: PureBlack.opacity(0.2), radius: 6, y: 3)
+            }
+        }
+        .padding(.trailing, 20).padding(.bottom, 24)
     }
 
     // MARK: Right Now
@@ -248,26 +318,6 @@ struct HomeView: View {
                 if granted { externalEvents = CalendarService.shared.events(on: selected) }
             }
         }
-    }
-
-    // MARK: Add button
-
-    private var addButton: some View {
-        VStack(spacing: 10) {
-            if selected != CalDate.today() {
-                Button { ui.selectedDate = .today() } label: {
-                    Text("\(CalDate.today().dayOfMonth)")
-                        .font(AscentFont.titleMedium).foregroundColor(PureWhite)
-                        .frame(width: 44, height: 44).background(Circle().fill(RidgelineBlue))
-                }
-            }
-            Button { showAddMenu = true } label: {
-                Image(systemName: "plus").font(.system(size: 26, weight: .semibold)).foregroundColor(PureWhite)
-                    .frame(width: 54, height: 54).background(Circle().fill(RidgelineBlue))
-                    .shadow(color: PureBlack.opacity(0.2), radius: 6, y: 3)
-            }
-        }
-        .padding(.trailing, 20).padding(.bottom, 24)
     }
 
     // MARK: Actions
