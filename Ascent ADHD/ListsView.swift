@@ -344,46 +344,147 @@ struct SubtaskEditorView: View {
     }
 }
 
-// MARK: - Brain Dump
+// MARK: - Brain Dump wizard
+//
+// Two steps, ported from the Android brain-dump dialog:
+//   1. Capture — add items one at a time, edit/remove them.
+//   2. Prioritize — pick up to (3 − existing priorities) items to elevate to Priorities; the rest
+//      become "Other To-Do" items. Selected items are created as (unscheduled) priorities.
 
 struct BrainDumpSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     let date: CalDate
-    @State private var text = ""
+
+    @State private var step = 1
+    @State private var draft = ""
+    @State private var items: [WizardItem] = []
+    @State private var selectedIds: Set<Int64> = []
+
+    private var existingPriorityCount: Int {
+        store.scheduleEntries.filter { $0.date == date && $0.isTopPriority }.count
+    }
+    private var availableSlots: Int { max(3 - existingPriorityCount, 0) }
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Get it out of your head")
-                    .font(AscentFont.headlineSmall).foregroundColor(MidnightSlate)
-                Text("One thought per line. We'll turn each into a to-do you can sort later.")
-                    .font(AscentFont.bodyMedium).foregroundColor(TextMuted)
-                TextEditor(text: $text)
-                    .font(AscentFont.bodyLarge)
-                    .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(CardInset))
-                    .frame(minHeight: 220)
-                Spacer()
-            }
-            .padding(20)
-            .navigationTitle("Brain Dump")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") { commit() }.disabled(text.trimmed.isEmpty)
-                }
-            }
+            Group { step == 1 ? AnyView(captureStep) : AnyView(prioritizeStep) }
+                .navigationTitle("Brain Dump")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
         }
     }
 
-    private func commit() {
-        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        for line in lines {
-            store.otherTodoEntries.append(OtherTodoItem(text: line, date: date, fromBrainDump: true))
+    // Step 1
+    private var captureStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Get it all out of your head, one thought at a time.")
+                .font(AscentFont.bodyMedium).foregroundColor(TextMuted)
+            HStack(spacing: 8) {
+                TextField("List your ideas or tasks…", text: $draft)
+                    .padding(.horizontal, 14).padding(.vertical, 12).background(Capsule().fill(PureWhite))
+                    .overlay(Capsule().stroke(BorderGray.opacity(0.6), lineWidth: 1))
+                    .onSubmit(addItem)
+                Button(action: addItem) {
+                    Image(systemName: "plus").font(.system(size: 22, weight: .bold)).foregroundColor(PureWhite)
+                        .frame(width: 48, height: 48).background(Circle().fill(RidgelineBlue))
+                }
+            }
+            ScrollView {
+                VStack(spacing: 8) {
+                    if items.isEmpty {
+                        Text("Your mind palace is clear.").font(AscentFont.bodyMedium).foregroundColor(.gray).padding(.top, 40)
+                    } else {
+                        ForEach(items) { item in
+                            HStack {
+                                Text(item.text).font(AscentFont.titleSmall).foregroundColor(MidnightSlate)
+                                Spacer()
+                                Image(systemName: "xmark").foregroundColor(.gray).font(.system(size: 14))
+                                    .onTapGesture { items.removeAll { $0.id == item.id } }
+                            }
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(Capsule().fill(PureWhite))
+                        }
+                    }
+                }
+            }
+            Button {
+                if !items.isEmpty { step = 2 }
+            } label: {
+                Text("Next").fontWeight(.bold).foregroundColor(PureWhite)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14).background(Capsule().fill(RidgelineBlue))
+            }
+            .disabled(items.isEmpty)
+            .opacity(items.isEmpty ? 0.5 : 1)
         }
-        if !lines.isEmpty { store.recordActivity() }
+        .padding(20)
+    }
+
+    // Step 2
+    private var prioritizeStep: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Select today's focus blocks").font(AscentFont.headlineSmall).foregroundColor(MidnightSlate)
+            if availableSlots > 0 {
+                Text("Pick up to \(availableSlots) to elevate to Priorities. The rest move to 'Other To-Do'.")
+                    .font(AscentFont.bodyMedium).foregroundColor(.gray)
+            } else {
+                Text("You already have 3 priorities today — everything here will become a to-do.")
+                    .font(AscentFont.bodyMedium).foregroundColor(RidgelineBlue).fontWeight(.bold)
+            }
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(items) { item in
+                        let chosen = selectedIds.contains(item.id)
+                        let canPick = availableSlots > 0
+                        HStack {
+                            Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(chosen ? RidgelineBlue : MistBlue).font(.system(size: 22))
+                            Text(item.text).font(AscentFont.titleSmall)
+                                .foregroundColor(!canPick && !chosen ? .gray : MidnightSlate)
+                            Spacer()
+                        }
+                        .padding(14)
+                        .background(Capsule().fill(chosen ? IceBlueAccent : PureWhite))
+                        .overlay(Capsule().stroke(chosen ? RidgelineBlue : Color.clear, lineWidth: 2))
+                        .onTapGesture { toggle(item) }
+                    }
+                }
+            }
+            Button(action: finish) {
+                Text(selectedIds.isEmpty ? "Save to Other To-Do" : "Add \(selectedIds.count) priorit\(selectedIds.count == 1 ? "y" : "ies")")
+                    .fontWeight(.bold).foregroundColor(PureWhite)
+                    .frame(maxWidth: .infinity).padding(.vertical, 14).background(Capsule().fill(RidgelineBlue))
+            }
+        }
+        .padding(20)
+    }
+
+    private func addItem() {
+        let t = draft.trimmed
+        guard !t.isEmpty else { return }
+        items.append(WizardItem(text: t))
+        draft = ""
+    }
+    private func toggle(_ item: WizardItem) {
+        if selectedIds.contains(item.id) { selectedIds.remove(item.id) }
+        else if selectedIds.count < availableSlots { selectedIds.insert(item.id) }
+    }
+    private func finish() {
+        for item in items {
+            if selectedIds.contains(item.id) {
+                store.scheduleEntries.append(ScheduleEntry(
+                    defaultSlotLabel: "", task: item.text, isTopPriority: true,
+                    hasCustomTime: false, date: date))
+            } else {
+                store.otherTodoEntries.append(OtherTodoItem(text: item.text, date: date, fromBrainDump: true))
+            }
+        }
+        store.recordActivity()
+        if selectedIds.isEmpty {
+            store.showNotification("Brain Dump Saved", "Items added to your to-do list.", color: RidgelineBlue, icon: "🧠")
+        } else {
+            store.showNotification("Priorities set", "Elevated \(selectedIds.count) to today's priorities.", color: RidgelineBlue, icon: "🧠")
+        }
         dismiss()
     }
 }

@@ -20,6 +20,8 @@ struct HomeView: View {
     @State private var editorEntry: ScheduleEntry? = nil
     @State private var newEntryIsPriority = false
     @State private var presentEditor = false
+    @State private var showFocusSetup = false
+    @State private var externalEvents: [ExternalEvent] = []
 
     private var selected: CalDate { ui.selectedDate }
 
@@ -53,6 +55,7 @@ struct HomeView: View {
                         allDayBar
                     }
                     scheduleList
+                    externalEventsList
                     Color.clear.frame(height: 90)
                 }
                 .padding(.horizontal, 12)
@@ -61,12 +64,17 @@ struct HomeView: View {
 
             addButton
         }
+        .onAppear(perform: loadExternalEvents)
+        .onChange(of: selected) { _, _ in loadExternalEvents() }
+        .onChange(of: store.showDeviceCalendar) { _, _ in loadExternalEvents() }
         .sheet(isPresented: $presentEditor) {
             TaskEditorSheet(entry: editorEntry, isPriority: newEntryIsPriority, ownerDate: selected)
         }
+        .sheet(isPresented: $showFocusSetup) { FocusSetupSheet() }
         .confirmationDialog("Add", isPresented: $showAddMenu, titleVisibility: .visible) {
             Button("New event") { editorEntry = nil; newEntryIsPriority = false; presentEditor = true }
             Button("New priority") { editorEntry = nil; newEntryIsPriority = true; presentEditor = true }
+            Button("Start focus session") { showFocusSetup = true }
             Button("Cancel", role: .cancel) { }
         }
     }
@@ -203,6 +211,43 @@ struct HomeView: View {
         .background(SurfaceCard(elevation: 1) { Color.clear })
         .contentShape(Rectangle())
         .onTapGesture { editEntry(entry) }
+    }
+
+    // MARK: External (device calendar) events
+
+    @ViewBuilder private var externalEventsList: some View {
+        if !externalEvents.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar").font(.system(size: 13)).foregroundColor(RidgelineBlue)
+                    Text("From your calendar").font(AscentFont.labelMedium).foregroundColor(TextMuted)
+                }
+                .padding(.top, 6)
+                ForEach(externalEvents) { ev in
+                    HStack(spacing: 10) {
+                        Text(ev.isAllDay ? "All-day" : formatTimeLabel(ev.startHour, ev.startMinute))
+                            .font(AscentFont.labelMedium).foregroundColor(TextMuted)
+                            .frame(width: 64, alignment: .trailing)
+                        RoundedRectangle(cornerRadius: 3).fill(MistBlue).frame(width: 4)
+                        Text(ev.title).font(AscentFont.titleSmall).foregroundColor(MidnightSlate)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .background(SurfaceCard(fill: MistBlue.opacity(0.12), elevation: 0) { Color.clear })
+                }
+            }
+        }
+    }
+
+    private func loadExternalEvents() {
+        guard store.showDeviceCalendar else { externalEvents = []; return }
+        if CalendarService.shared.isAuthorized {
+            externalEvents = CalendarService.shared.events(on: selected)
+        } else {
+            CalendarService.shared.requestAccess { granted in
+                if granted { externalEvents = CalendarService.shared.events(on: selected) }
+            }
+        }
     }
 
     // MARK: Add button

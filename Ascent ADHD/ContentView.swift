@@ -50,7 +50,13 @@ struct ContentView: View {
             if let milestone = store.celebrationMilestone {
                 MilestoneCelebrationView(milestone: milestone) { store.celebrationMilestone = nil }
             }
+
+            // Focus session overlay (full-screen while a session is active).
+            if let session = store.focusSession {
+                FocusOverlay(session: session).transition(.opacity)
+            }
         }
+        .animation(.easeInOut, value: store.focusSession == nil)
     }
 }
 

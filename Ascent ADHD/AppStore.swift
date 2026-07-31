@@ -18,7 +18,8 @@ struct AscentEvent: Equatable {
 
 final class AppStore: ObservableObject {
 
-    private let defaults = UserDefaults(suiteName: "ridgeline_storage_v7") ?? .standard
+    private static let suiteName = "ridgeline_storage_v7"
+    private let defaults = UserDefaults(suiteName: AppStore.suiteName) ?? .standard
 
     // MARK: Persisted collections
     @Published var scheduleEntries: [ScheduleEntry] = []      { didSet { saveList("scheduleEntries", scheduleEntries) { $0.toJSON() } } }
@@ -58,6 +59,13 @@ final class AppStore: ObservableObject {
     @Published var ascentCelebration: AscentEvent? = nil
     @Published var customNotification: CustomNotificationData? = nil
 
+    // MARK: Focus session (delay-aversion chunking)
+    @Published var focusSession: FocusSession? = nil
+    @Published var focusChunkReward: String? = nil
+
+    // MARK: Device calendar opt-in
+    @Published var showDeviceCalendar: Bool = false { didSet { defaults.set(showDeviceCalendar, forKey: "showDeviceCalendar") } }
+
     private var todayCompletionsDay: Int64 = 0
 
     // MARK: - Load
@@ -93,6 +101,65 @@ final class AppStore: ObservableObject {
         reflectionReminderEnabled = defaults.object(forKey: "reflectionReminderEnabled") as? Bool ?? true
         reflectionReminderHour = defaults.object(forKey: "reflectionReminderHour") as? Int ?? 20
         reflectionReminderMinute = defaults.integer(forKey: "reflectionReminderMinute")
+        showDeviceCalendar = defaults.bool(forKey: "showDeviceCalendar")
+    }
+
+    // MARK: - Focus session (ported from the focus ticker + overlay)
+
+    func startFocus(taskLabel: String, minutes: Int) {
+        focusChunkReward = nil
+        focusSession = FocusSession(taskLabel: taskLabel, workMinutes: minutes)
+    }
+
+    /// One-second tick. Decrements the current phase; on a boundary, transitions work↔break,
+    /// awarding elevation + surfacing a micro-reward at the end of each work chunk.
+    func tickFocus() {
+        guard var s = focusSession, !s.isPaused else { return }
+        if s.secondsLeft > 1 {
+            s.secondsLeft -= 1
+            focusSession = s
+            return
+        }
+        if s.phase == FOCUS_PHASE_WORK {
+            awardElevation(ELEVATION_TODO, message: "Focus chunk done · +\(ELEVATION_TODO) ft", silent: true)
+            #if canImport(UIKit)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            #endif
+            focusChunkReward = rewardBank.small.randomElement()
+            s.phase = FOCUS_PHASE_BREAK
+            s.secondsLeft = FOCUS_BREAK_MINUTES * 60
+            s.chunksCompleted += 1
+            focusSession = s
+        } else {
+            focusChunkReward = nil
+            #if canImport(UIKit)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            s.phase = FOCUS_PHASE_WORK
+            s.secondsLeft = s.workMinutes * 60
+            focusSession = s
+        }
+    }
+
+    func toggleFocusPause() {
+        guard var s = focusSession else { return }
+        s.isPaused.toggle(); focusSession = s
+    }
+
+    func skipBreak() {
+        guard var s = focusSession else { return }
+        focusChunkReward = nil
+        s.phase = FOCUS_PHASE_WORK; s.secondsLeft = s.workMinutes * 60
+        focusSession = s
+    }
+
+    func stopFocus() {
+        let done = focusSession?.chunksCompleted ?? 0
+        focusSession = nil
+        focusChunkReward = nil
+        if done > 0 {
+            showNotification("Focus done", "\(done) chunk\(done == 1 ? "" : "s") completed. Nice work.", color: RidgelineBlue, icon: "⛰️")
+        }
     }
 
     // MARK: - Gamification engine (ported from awardElevation / removeElevation / recordActivity)
@@ -224,6 +291,64 @@ final class AppStore: ObservableObject {
     func updateGoal(_ id: String, _ mutate: (inout GoalEntry) -> Void) {
         guard let i = goalEntries.firstIndex(where: { $0.id == id }) else { return }
         mutate(&goalEntries[i])
+    }
+
+    // MARK: - Backup / restore (mirrors exportPrefsToJson / importPrefsFromJson)
+
+    /// Export the whole store as a typed-value JSON snapshot (schema-compatible with the Android app).
+    func exportJSON() -> String {
+        let domain = UserDefaults.standard.persistentDomain(forName: AppStore.suiteName) ?? [:]
+        var data: [String: Any] = [:]
+        for (key, value) in domain {
+            var entry: [String: Any] = [:]
+            if let n = value as? NSNumber {
+                if CFGetTypeID(n) == CFBooleanGetTypeID() {
+                    entry = ["t": "b", "v": n.boolValue]
+                } else if n.stringValue.contains(".") {
+                    entry = ["t": "f", "v": n.doubleValue]
+                } else if abs(n.int64Value) > Int64(Int32.max) {
+                    entry = ["t": "l", "v": n.int64Value]
+                } else {
+                    entry = ["t": "i", "v": n.intValue]
+                }
+            } else if let s = value as? String {
+                entry = ["t": "s", "v": s]
+            } else if let arr = value as? [Any] {
+                entry = ["t": "ss", "v": arr.map { "\($0)" }]
+            }
+            if !entry.isEmpty { data[key] = entry }
+        }
+        let root: [String: Any] = [
+            "app": "Ascent", "schemaVersion": 1,
+            "exportedAt": Int64(Date().timeIntervalSince1970 * 1000), "data": data
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted]),
+              let str = String(data: jsonData, encoding: .utf8) else { return "{}" }
+        return str
+    }
+
+    /// Restore from a backup snapshot. REPLACES all existing data, then reloads state. Returns success.
+    @discardableResult
+    func importJSON(_ json: String) -> Bool {
+        guard let jsonData = json.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              let data = root["data"] as? [String: Any] else { return false }
+        var newDomain: [String: Any] = [:]
+        for (key, raw) in data {
+            guard let entry = raw as? [String: Any], let t = entry["t"] as? String else { continue }
+            switch t {
+            case "b": newDomain[key] = (entry["v"] as? Bool) ?? false
+            case "i": newDomain[key] = JSON.int(entry, "v")
+            case "l": newDomain[key] = JSON.long(entry, "v", 0)
+            case "f": newDomain[key] = (entry["v"] as? NSNumber)?.doubleValue ?? 0
+            case "s": newDomain[key] = entry["v"] as? String ?? ""
+            case "ss": newDomain[key] = (entry["v"] as? [String]) ?? []
+            default: break
+            }
+        }
+        UserDefaults.standard.setPersistentDomain(newDomain, forName: AppStore.suiteName)
+        load()
+        return true
     }
 
     // Derived helpers.

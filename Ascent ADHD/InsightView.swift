@@ -314,6 +314,13 @@ struct SettingsSheet: View {
                         Text("Familiar with my ADHD").tag(TRAIL_STAGE_INMOMENT)
                     }
                 }
+                Section("Device calendar") {
+                    Toggle("Show my calendar events", isOn: $store.showDeviceCalendar)
+                        .onChange(of: store.showDeviceCalendar) { _, on in
+                            if on { CalendarService.shared.requestAccess { _ in } }
+                        }
+                }
+                BackupSection()
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
