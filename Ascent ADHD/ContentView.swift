@@ -57,6 +57,12 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut, value: store.focusSession == nil)
+        .fullScreenCover(isPresented: Binding(
+            get: { !store.hasCompletedSetup },
+            set: { _ in }
+        )) {
+            OnboardingView()
+        }
     }
 }
 
