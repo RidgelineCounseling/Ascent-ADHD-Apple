@@ -26,14 +26,34 @@ struct HomeView: View {
     @State private var showQuickTodo = false
     @State private var quickTodoText = ""
     @State private var externalEvents: [ExternalEvent] = []
+    @State private var presetStart: (Int, Int)? = nil
 
     private var selected: CalDate { ui.selectedDate }
 
-    private var timedEntries: [ScheduleEntry] {
-        store.scheduleEntries
+    // Blocks shown on the timeline: app events, device-calendar events, and timed to-dos.
+    private var timelineBlocks: [TimelineBlock] {
+        var out: [TimelineBlock] = store.scheduleEntries
             .filter { $0.date == selected && !$0.isAllDay && $0.hasCustomTime }
-            .sorted { $0.startMinutesOfDay < $1.startMinutesOfDay }
+            .map { e in
+                TimelineBlock(id: e.id, task: e.task, notes: e.notes,
+                              startMin: e.startMinutesOfDay, durationMins: e.durationMins,
+                              color: e.blockColor, kind: .app, entry: e)
+            }
+        out += externalEvents.filter { !$0.isAllDay }.map { ext in
+            TimelineBlock(id: "ext_\(ext.id)", task: ext.title, notes: "",
+                          startMin: ext.startHour * 60 + ext.startMinute, durationMins: 60,
+                          color: MistBlue.opacity(0.35), kind: .external, entry: nil)
+        }
+        out += store.otherTodoEntries
+            .filter { !$0.isCompleted && $0.dueDate == selected && $0.dueTime != nil }
+            .map { td in
+                TimelineBlock(id: "todo_\(td.id)", task: td.text, notes: "",
+                              startMin: (td.dueTime!.hour) * 60 + td.dueTime!.minute, durationMins: 15,
+                              color: RidgelineBlue, kind: .todo, entry: nil)
+            }
+        return out
     }
+
     private var allDayEntries: [ScheduleEntry] {
         store.scheduleEntries.filter { $0.date == selected && $0.isAllDay }
     }
@@ -58,8 +78,15 @@ struct HomeView: View {
                     if !allDayEntries.isEmpty || !unscheduledPriorities.isEmpty {
                         allDayBar
                     }
-                    scheduleList
-                    externalEventsList
+                    ScheduleTimeline(
+                        blocks: timelineBlocks,
+                        isToday: selected == CalDate.today(),
+                        onCreate: { hour, minute in
+                            editorEntry = nil; newEntryIsPriority = false
+                            presetStart = (hour, minute); presentEditor = true
+                        },
+                        onEdit: { entry in editEntry(entry) }
+                    )
                     Color.clear.frame(height: 90)
                 }
                 .padding(.horizontal, 12)
@@ -79,7 +106,7 @@ struct HomeView: View {
         .onChange(of: selected) { _, _ in loadExternalEvents() }
         .onChange(of: store.showDeviceCalendar) { _, _ in loadExternalEvents() }
         .sheet(isPresented: $presentEditor) {
-            TaskEditorSheet(entry: editorEntry, isPriority: newEntryIsPriority, ownerDate: selected)
+            TaskEditorSheet(entry: editorEntry, isPriority: newEntryIsPriority, ownerDate: selected, presetStart: presetStart)
         }
         .sheet(isPresented: $showFocusSetup) { FocusSetupSheet() }
         .sheet(isPresented: $showBrainDump) { BrainDumpSheet(date: selected) }
@@ -230,85 +257,6 @@ struct HomeView: View {
         .onTapGesture(perform: action)
     }
 
-    // MARK: Schedule list
-
-    @ViewBuilder private var scheduleList: some View {
-        if timedEntries.isEmpty {
-            VStack(spacing: 6) {
-                Text("🗓️").font(.system(size: 30))
-                Text("Nothing scheduled with a time yet.")
-                    .font(AscentFont.bodyMedium).foregroundColor(TextMuted)
-            }
-            .frame(maxWidth: .infinity).padding(.vertical, 30)
-        } else {
-            VStack(spacing: 8) {
-                ForEach(timedEntries) { entry in
-                    scheduleRow(entry)
-                }
-            }
-        }
-    }
-
-    private func scheduleRow(_ entry: ScheduleEntry) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(formatTimeLabel(entry.startHour, entry.startMinute))
-                    .font(AscentFont.labelMedium).foregroundColor(MidnightSlate)
-                Text("\(entry.durationMins)m").font(AscentFont.labelSmall).foregroundColor(TextMuted)
-            }
-            .frame(width: 64, alignment: .trailing)
-
-            RoundedRectangle(cornerRadius: 3).fill(entry.blockColor == PureWhite ? MistBlue.opacity(0.4) : entry.blockColor)
-                .frame(width: 4)
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    if entry.isTopPriority {
-                        Image(systemName: "flag.fill").font(.system(size: 11)).foregroundColor(RidgelineBlue)
-                    }
-                    Text(entry.task).font(AscentFont.titleSmall).foregroundColor(MidnightSlate)
-                        .strikethrough(entry.isCompleted)
-                }
-                if !entry.reward.isEmpty {
-                    Text("🎁 \(entry.reward)").font(AscentFont.labelSmall).foregroundColor(TextMuted)
-                }
-            }
-            Spacer(minLength: 0)
-
-            AscentCheckbox(isChecked: entry.isCompleted) { toggleComplete(entry) }
-        }
-        .padding(12)
-        .background(SurfaceCard(elevation: 1) { Color.clear })
-        .contentShape(Rectangle())
-        .onTapGesture { editEntry(entry) }
-    }
-
-    // MARK: External (device calendar) events
-
-    @ViewBuilder private var externalEventsList: some View {
-        if !externalEvents.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "calendar").font(.system(size: 13)).foregroundColor(RidgelineBlue)
-                    Text("From your calendar").font(AscentFont.labelMedium).foregroundColor(TextMuted)
-                }
-                .padding(.top, 6)
-                ForEach(externalEvents) { ev in
-                    HStack(spacing: 10) {
-                        Text(ev.isAllDay ? "All-day" : formatTimeLabel(ev.startHour, ev.startMinute))
-                            .font(AscentFont.labelMedium).foregroundColor(TextMuted)
-                            .frame(width: 64, alignment: .trailing)
-                        RoundedRectangle(cornerRadius: 3).fill(MistBlue).frame(width: 4)
-                        Text(ev.title).font(AscentFont.titleSmall).foregroundColor(MidnightSlate)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(12)
-                    .background(SurfaceCard(fill: MistBlue.opacity(0.12), elevation: 0) { Color.clear })
-                }
-            }
-        }
-    }
-
     private func loadExternalEvents() {
         guard store.showDeviceCalendar else { externalEvents = []; return }
         if CalendarService.shared.isAuthorized {
@@ -323,18 +271,7 @@ struct HomeView: View {
     // MARK: Actions
 
     private func editEntry(_ entry: ScheduleEntry) {
+        presetStart = nil
         editorEntry = entry; newEntryIsPriority = entry.isTopPriority; presentEditor = true
-    }
-    private func toggleComplete(_ entry: ScheduleEntry) {
-        store.updateSchedule(entry.id) { $0.isCompleted.toggle() }
-        if let updated = store.scheduleEntries.first(where: { $0.id == entry.id }) {
-            if updated.isCompleted {
-                store.awardElevation(entry.isTopPriority ? ELEVATION_PRIORITY : ELEVATION_TODO,
-                                     message: "✓ \(entry.task)")
-            } else {
-                store.removeElevation(entry.isTopPriority ? ELEVATION_PRIORITY : ELEVATION_TODO)
-                store.recordActivity()
-            }
-        }
     }
 }

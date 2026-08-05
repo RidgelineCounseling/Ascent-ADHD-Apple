@@ -17,6 +17,7 @@ struct TaskEditorSheet: View {
     let entry: ScheduleEntry?          // nil = create new
     let isPriority: Bool
     let ownerDate: CalDate
+    var presetStart: (Int, Int)? = nil   // (hour, minute) for a new event created from the timeline
 
     @State private var task = ""
     @State private var notes = ""
@@ -140,6 +141,10 @@ struct TaskEditorSheet: View {
             startTime = Calendar.current.date(from: comps) ?? Date()
         } else {
             priority = isPriority
+            if let (h, m) = presetStart {
+                var comps = DateComponents(); comps.hour = h; comps.minute = m
+                startTime = Calendar.current.date(from: comps) ?? Date()
+            }
         }
     }
 

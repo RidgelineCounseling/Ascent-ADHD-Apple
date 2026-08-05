@@ -35,13 +35,26 @@ is structurally cross-compatible.
 - **Reminders** — mapped from AlarmManager to `UNUserNotificationCenter`.
 - **Haptics** — Compose `HapticFeedback` → `UINotificationFeedbackGenerator` / `UIImpactFeedbackGenerator`.
 
-## Deferred to a later pass (present as models/stubs, UI simplified)
+## Now implemented (later passes)
 
-- Brain-dump *wizard* (multi-step prioritization flow) — replaced with a simple batch capture for now.
-- Focus session (Pomodoro chunking) timer UI — model (`FocusSession`) is ported; overlay pending.
-- Device-calendar read-only overlay (Android `CalendarContract`) — the iOS equivalent is EventKit; not wired yet.
-- Backup/restore file export/import — data is already JSON-round-tripped; the file picker UI is pending.
-- Drag-to-reorder to-dos, and some confirm dialogs (carry-over, subtask→parent completion prompts).
+- **Focus session** timer — `FocusView` (setup + full-screen countdown overlay), ticker in `AppStore`.
+- **Backup/restore** — `Backup.swift` + `AppStore.exportJSON/importJSON`, surfaced in Settings.
+- **Device-calendar overlay** — `Calendar.swift` (EventKit, read-only), shown on the timeline; opt-in in Settings.
+- **Brain-dump wizard** — the full two-step capture → prioritize flow (`BrainDumpSheet`).
+- **Speed-dial FAB** — the rotating +→× menu with five pill options (`HomeView.fabArea`).
+- **Custom color picker** — `ColorPickerView` (HSV), opened from the task editor.
+- **Task editor richness** — subtasks + reminder presets (night before / morning of) with local notifications.
+- **Drag-to-reorder** to-dos on Lists (long-press).
+- **Onboarding wizard** — first-launch reward-bank + setup (`OnboardingView`).
+- **Draggable schedule timeline** — `ScheduleTimeline`, the absolute-positioned 24-hour grid with
+  overlap column-packing, tap-empty-to-create, tap-to-edit, and a live "now" line. (Matches Android,
+  which is tap-based; Android has no drag-to-move of events.)
+
+## Still simplified
+
+- Custom fonts (Inter / Plus Jakarta Sans) vs. system-font stand-ins at matching sizes/weights.
+- Some confirmation dialogs (carry-over, subtask→parent completion prompts) and the separate
+  read-only task *detail* view (merged into the editor).
 
 The Xcode project uses file-system-synchronized groups, so every `.swift` file in `Ascent ADHD/` is
 picked up automatically — no `project.pbxproj` edits are needed to add more.
