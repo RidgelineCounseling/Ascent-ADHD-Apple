@@ -27,7 +27,12 @@ struct TaskEditorSheet: View {
     @State private var durationMins = 60
     @State private var reward = ""
     @State private var triggerCue = ""
-    @State private var colorIndex = 0
+    @State private var selectedColor = PureWhite
+    @State private var subtasks: [TodoSubtask] = []
+    @State private var newSubtask = ""
+    @State private var reminderNightBefore = false
+    @State private var reminderMorningOf = false
+    @State private var showColorPicker = false
 
     var body: some View {
         NavigationStack {
@@ -47,12 +52,23 @@ struct TaskEditorSheet: View {
                 Section("Color") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
-                            ForEach(Array(EventColors.enumerated()), id: \.offset) { idx, color in
+                            ForEach(Array(EventColors.enumerated()), id: \.offset) { _, color in
+                                let isSel = color.argb == selectedColor.argb
                                 Circle().fill(color)
                                     .frame(width: 30, height: 30)
-                                    .overlay(Circle().stroke(idx == colorIndex ? RidgelineBlue : BorderGray, lineWidth: idx == colorIndex ? 3 : 1))
-                                    .onTapGesture { colorIndex = idx }
+                                    .overlay(Circle().stroke(isSel ? RidgelineBlue : BorderGray, lineWidth: isSel ? 3 : 1))
+                                    .onTapGesture { selectedColor = color }
                             }
+                            // Custom-color swatch (opens the HSV picker).
+                            let isCustom = !EventColors.contains { $0.argb == selectedColor.argb }
+                            ZStack {
+                                Circle().fill(isCustom ? selectedColor : Color.clear)
+                                    .frame(width: 30, height: 30)
+                                    .overlay(Circle().stroke(isCustom ? RidgelineBlue : BorderGray, lineWidth: isCustom ? 3 : 1))
+                                Image(systemName: "eyedropper").font(.system(size: 13))
+                                    .foregroundColor(isCustom ? PureWhite : RidgelineBlue)
+                            }
+                            .onTapGesture { showColorPicker = true }
                         }.padding(.vertical, 4)
                     }
                 }
@@ -66,6 +82,31 @@ struct TaskEditorSheet: View {
                     TextField("When I… (starter cue)", text: $triggerCue)
                 } header: {
                     HStack { Text("Starter cue"); WhyChip(title: WHY_TRIGGER_CUE_TITLE, explanation: WHY_TRIGGER_CUE_BODY) }
+                }
+                Section("Reminders") {
+                    Toggle("Night before (8 PM)", isOn: $reminderNightBefore)
+                    Toggle("Morning of (9 AM)", isOn: $reminderMorningOf)
+                }
+                Section("Subtasks") {
+                    ForEach($subtasks) { $st in
+                        HStack {
+                            Image(systemName: st.isCompleted ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(st.isCompleted ? SuccessGreen : MistBlue)
+                                .onTapGesture { st.isCompleted.toggle() }
+                            Text(st.text)
+                            Spacer()
+                            Button { subtasks.removeAll { $0.id == st.id } } label: {
+                                Image(systemName: "xmark").foregroundColor(.gray)
+                            }
+                        }
+                    }
+                    HStack {
+                        TextField("Add a subtask…", text: $newSubtask)
+                        Button {
+                            let t = newSubtask.trimmed
+                            if !t.isEmpty { subtasks.append(TodoSubtask(text: t)); newSubtask = "" }
+                        } label: { Image(systemName: "plus.circle.fill").foregroundColor(RidgelineBlue) }
+                    }
                 }
                 Section("Notes") {
                     TextField("Notes", text: $notes, axis: .vertical).lineLimit(2...5)
@@ -82,6 +123,9 @@ struct TaskEditorSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Save") { save() }.disabled(task.trimmed.isEmpty) }
             }
+            .sheet(isPresented: $showColorPicker) {
+                CustomColorPicker(initial: selectedColor) { selectedColor = $0 }
+            }
             .onAppear(perform: load)
         }
     }
@@ -90,8 +134,8 @@ struct TaskEditorSheet: View {
         if let e = entry {
             task = e.task; notes = e.notes; priority = e.isTopPriority; allDay = e.isAllDay
             hasCustomTime = e.hasCustomTime; durationMins = e.durationMins; reward = e.reward
-            triggerCue = e.triggerCue
-            colorIndex = EventColors.firstIndex(where: { $0.argb == e.blockColor.argb }) ?? 0
+            triggerCue = e.triggerCue; selectedColor = e.blockColor; subtasks = e.subtasks
+            reminderNightBefore = e.reminderNightBefore; reminderMorningOf = e.reminderMorningOf
             var comps = DateComponents(); comps.hour = e.startHour; comps.minute = e.startMinute
             startTime = Calendar.current.date(from: comps) ?? Date()
         } else {
@@ -102,27 +146,43 @@ struct TaskEditorSheet: View {
     private func save() {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: startTime)
         let hour = comps.hour ?? 9, minute = comps.minute ?? 0
-        let color = EventColors[colorIndex]
+        let id: String
         if let e = entry {
+            id = e.id
             store.updateSchedule(e.id) {
                 $0.task = task.trimmed; $0.notes = notes; $0.isTopPriority = priority; $0.isAllDay = allDay
                 $0.hasCustomTime = !allDay && hasCustomTime; $0.startHour = hour; $0.startMinute = minute
-                $0.durationMins = durationMins; $0.reward = reward; $0.triggerCue = triggerCue; $0.blockColor = color
+                $0.durationMins = durationMins; $0.reward = reward; $0.triggerCue = triggerCue
+                $0.blockColor = selectedColor; $0.subtasks = subtasks
+                $0.reminderNightBefore = reminderNightBefore; $0.reminderMorningOf = reminderMorningOf
             }
         } else {
             let new = ScheduleEntry(
                 defaultSlotLabel: "", task: task.trimmed, isTopPriority: priority, notes: notes,
-                blockColor: color, startHour: hour, startMinute: minute, durationMins: durationMins,
+                blockColor: selectedColor, startHour: hour, startMinute: minute, durationMins: durationMins,
                 hasCustomTime: !allDay && hasCustomTime, date: ownerDate, reward: reward,
-                isAllDay: allDay, triggerCue: triggerCue)
+                isAllDay: allDay, reminderNightBefore: reminderNightBefore, reminderMorningOf: reminderMorningOf,
+                triggerCue: triggerCue, subtasks: subtasks)
+            id = new.id
             store.scheduleEntries.append(new)
             store.recordActivity()
         }
+        scheduleReminders(for: id)
         dismiss()
     }
 
+    private func scheduleReminders(for id: String) {
+        Reminders.cancelAllReminders(itemId: id)
+        if reminderNightBefore, let d = nightBeforeDate(ownerDate) {
+            Reminders.scheduleReminder(itemId: id, slot: "night", title: "Tomorrow: \(task.trimmed)", body: "A heads-up for tomorrow.", at: d)
+        }
+        if reminderMorningOf, let d = morningOfDate(ownerDate) {
+            Reminders.scheduleReminder(itemId: id, slot: "morning", title: "Today: \(task.trimmed)", body: "On your plan for today.", at: d)
+        }
+    }
+
     private func deleteEntry() {
-        if let e = entry { store.scheduleEntries.removeAll { $0.id == e.id } }
+        if let e = entry { Reminders.cancelAllReminders(itemId: e.id); store.scheduleEntries.removeAll { $0.id == e.id } }
         dismiss()
     }
 }

@@ -20,6 +20,11 @@ struct ListsView: View {
     @State private var presentPriorityEditor = false
     @State private var newPriority = false
 
+    // Drag-to-reorder state for the active to-do list.
+    @State private var draggingId: String? = nil
+    @State private var dragOffset: CGFloat = 0
+    private let rowSlot: CGFloat = 76
+
     private var day: CalDate { ui.selectedDate }
 
     private var dayPriorities: [ScheduleEntry] {
@@ -172,12 +177,65 @@ struct ListsView: View {
                     Text("No additional tasks written down for today.")
                         .font(AscentFont.bodyMedium).foregroundColor(.gray).padding(.vertical, 8)
                 } else {
-                    ForEach(activeTodos) { todoRow($0) }
+                    reorderableActiveList
                     ForEach(completedTodos) { completedRow($0) }
                 }
             }
             .padding(16)
         }
+    }
+
+    // Active to-dos with long-press drag reorder (ported from the Android hand-rolled reorder).
+    private var reorderableActiveList: some View {
+        let items = activeTodos
+        return VStack(spacing: 8) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                let isDragging = draggingId == item.id
+                let draggedIdx = draggingId.flatMap { id in items.firstIndex { $0.id == id } } ?? -1
+                let currentSlot = draggedIdx == -1 ? -1
+                    : min(max(draggedIdx + Int((dragOffset / rowSlot).rounded()), 0), items.count - 1)
+                let shift: CGFloat = {
+                    if isDragging || draggedIdx == -1 { return 0 }
+                    if currentSlot > draggedIdx && idx > draggedIdx && idx <= currentSlot { return -rowSlot }
+                    if currentSlot < draggedIdx && idx < draggedIdx && idx >= currentSlot { return rowSlot }
+                    return 0
+                }()
+                todoRow(item)
+                    .offset(y: isDragging ? dragOffset : shift)
+                    .zIndex(isDragging ? 1 : 0)
+                    .shadow(color: isDragging ? PureBlack.opacity(0.2) : .clear, radius: 8)
+                    .animation(.easeInOut(duration: 0.12), value: shift)
+                    .gesture(
+                        LongPressGesture(minimumDuration: 0.3)
+                            .sequenced(before: DragGesture())
+                            .onChanged { value in
+                                if case .second(true, let drag?) = value {
+                                    if draggingId == nil { draggingId = item.id }
+                                    dragOffset = drag.translation.height
+                                }
+                            }
+                            .onEnded { _ in
+                                if let idxNow = items.firstIndex(where: { $0.id == item.id }) {
+                                    let target = min(max(idxNow + Int((dragOffset / rowSlot).rounded()), 0), items.count - 1)
+                                    moveActiveTodo(from: idxNow, to: target)
+                                }
+                                draggingId = nil; dragOffset = 0
+                            }
+                    )
+            }
+        }
+    }
+
+    private func moveActiveTodo(from activeIdx: Int, to target: Int) {
+        guard activeIdx != target else { return }
+        let baseIndices = store.otherTodoEntries.indices.filter {
+            let it = store.otherTodoEntries[$0]; return !it.isCompleted && it.date <= day
+        }
+        guard activeIdx < baseIndices.count, target < baseIndices.count else { return }
+        let src = baseIndices[activeIdx]
+        let dst = baseIndices[target]
+        let moved = store.otherTodoEntries.remove(at: src)
+        store.otherTodoEntries.insert(moved, at: min(dst, store.otherTodoEntries.count))
     }
 
     private func todoRow(_ item: OtherTodoItem) -> some View {
